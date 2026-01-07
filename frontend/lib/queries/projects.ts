@@ -11,6 +11,7 @@ import {
   ShareLink,
 } from "../projects";
 import { io } from "socket.io-client";
+import { getSocketBaseUrl } from "../axios";
 
 export const useGetProjects = (uid: string, token: string) => {
   return useQuery({
@@ -43,7 +44,7 @@ export const useGetSocket = (token?: string, projectId?: string) => {
   return useQuery({
     queryKey: ["socket", token, projectId],
     queryFn: () =>
-      io("http://localhost:8080", {
+      io(getSocketBaseUrl(), {
         auth: {
           token: token,
           projectId: projectId,
