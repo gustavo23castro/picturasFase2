@@ -11,6 +11,20 @@ import {
   downloadProjectImage,
   downloadProjectResults,
   processProject,
+  reorderProjectTools,
+  cancelProjectProcess,
+  cancelProjectPreview,
+  createShareLink,
+  revokeShareLink,
+  addSharedProjectTool,
+  updateSharedProjectTool,
+  deleteSharedProjectTool,
+  clearSharedProjectTools,
+  reorderSharedProjectTools,
+  previewSharedProjectImage,
+  processSharedProject,
+  cancelSharedProjectProcess,
+  cancelSharedProjectPreview,
   updateProject,
   updateProjectTool,
   previewProjectImage,
@@ -229,6 +243,141 @@ export const useClearProjectTools = (
         refetchType: "all",
         queryKey: ["projectResults", uid, pid, token],
       });
+    },
+  });
+};
+
+export const useReorderProjectTools = (
+  uid: string,
+  pid: string,
+  token: string,
+) => {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: reorderProjectTools,
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["project", uid, pid, token] });
+      qc.invalidateQueries({
+        refetchType: "all",
+        queryKey: ["projectResults", uid, pid, token],
+      });
+    },
+  });
+};
+
+export const useCancelProjectProcess = () => {
+  return useMutation({
+    mutationFn: cancelProjectProcess,
+  });
+};
+
+export const useCancelProjectPreview = () => {
+  return useMutation({
+    mutationFn: cancelProjectPreview,
+  });
+};
+
+export const useCreateShareLink = (uid: string, pid: string, token: string) => {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: createShareLink,
+    onSuccess: () => {
+      qc.invalidateQueries({
+        refetchType: "all",
+        queryKey: ["shareLinks", uid, pid, token],
+      });
+    },
+  });
+};
+
+export const useRevokeShareLink = (uid: string, pid: string, token: string) => {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: revokeShareLink,
+    onSuccess: () => {
+      qc.invalidateQueries({
+        refetchType: "all",
+        queryKey: ["shareLinks", uid, pid, token],
+      });
+    },
+  });
+};
+
+export const useAddSharedProjectTool = (shareToken: string) => {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: addSharedProjectTool,
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["shareProject", shareToken] });
+      qc.invalidateQueries({ queryKey: ["shareProjectResults", shareToken] });
+    },
+  });
+};
+
+export const useUpdateSharedProjectTool = (shareToken: string) => {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: updateSharedProjectTool,
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["shareProject", shareToken] });
+      qc.invalidateQueries({ queryKey: ["shareProjectResults", shareToken] });
+    },
+  });
+};
+
+export const useDeleteSharedProjectTool = (shareToken: string) => {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: deleteSharedProjectTool,
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["shareProject", shareToken] });
+      qc.invalidateQueries({ queryKey: ["shareProjectResults", shareToken] });
+    },
+  });
+};
+
+export const useReorderSharedProjectTools = (shareToken: string) => {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: reorderSharedProjectTools,
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["shareProject", shareToken] });
+      qc.invalidateQueries({ queryKey: ["shareProjectResults", shareToken] });
+    },
+  });
+};
+
+export const usePreviewSharedProjectResult = () => {
+  return useMutation({
+    mutationFn: previewSharedProjectImage,
+  });
+};
+
+export const useProcessSharedProject = () => {
+  return useMutation({
+    mutationFn: processSharedProject,
+  });
+};
+
+export const useCancelSharedProjectProcess = () => {
+  return useMutation({
+    mutationFn: cancelSharedProjectProcess,
+  });
+};
+
+export const useCancelSharedProjectPreview = () => {
+  return useMutation({
+    mutationFn: cancelSharedProjectPreview,
+  });
+};
+
+export const useClearSharedProjectTools = (shareToken: string) => {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: clearSharedProjectTools,
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["shareProject", shareToken] });
+      qc.invalidateQueries({ queryKey: ["shareProjectResults", shareToken] });
     },
   });
 };

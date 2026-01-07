@@ -7,7 +7,13 @@ import { getImageDimensions } from "@/lib/utils";
 import { useCurrentImage, useProjectInfo } from "@/providers/project-provider";
 import { ResizeToolParams } from "@/lib/tool-types";
 
-export default function ResizeTool({ disabled }: { disabled: boolean }) {
+export default function ResizeTool({
+  disabled,
+  shareToken,
+}: {
+  disabled: boolean;
+  shareToken?: string;
+}) {
   const project = useProjectInfo();
   const currentImage = useCurrentImage();
 
@@ -57,6 +63,7 @@ export default function ResizeTool({ disabled }: { disabled: boolean }) {
     <ToolbarButton
       open={open}
       setOpen={setOpen}
+      shareToken={shareToken}
       tool={{
         procedure: "resize",
         params: {

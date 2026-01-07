@@ -14,7 +14,10 @@ import ObjectAITool from "./object-ai-tool";
 import PeopleAITool from "./people-ai-tool";
 import TextAITool from "./text-ai-tool";
 import UpgradeAITool from "./upgrade-ai-tool";
-import { useClearProjectTools } from "@/lib/mutations/projects";
+import {
+  useClearProjectTools,
+  useClearSharedProjectTools,
+} from "@/lib/mutations/projects";
 import { useSession } from "@/providers/session-provider";
 import { useProjectInfo } from "@/providers/project-provider";
 import { Button } from "../ui/button";
@@ -30,10 +33,16 @@ import {
 import { Eraser } from "lucide-react";
 import { useState } from "react";
 
-export function Toolbar() {
+export function Toolbar({
+  readOnly = false,
+  shareToken,
+}: {
+  readOnly?: boolean;
+  shareToken?: string;
+}) {
   const searchParams = useSearchParams();
   const view = searchParams.get("view") ?? "grid";
-  const disabled = view === "grid";
+  const disabled = view === "grid" || readOnly;
   const project = useProjectInfo();
   const session = useSession();
 
@@ -44,33 +53,34 @@ export function Toolbar() {
     project._id,
     session.token,
   );
+  const clearSharedTools = useClearSharedProjectTools(shareToken || "");
 
   return (
     <div className="flex h-full w-14 flex-col justify-between items-center border-r bg-background p-2">
       <div className="flex flex-col gap-2">
         <span className="text-sm text-gray-500">Tools</span>
-        <BrightnessTool disabled={disabled} />
-        <ContrastTool disabled={disabled} />
-        <SaturationTool disabled={disabled} />
-        <BinarizationTool disabled={disabled} />
-        <RotateTool disabled={disabled} />
-        <CropTool disabled={disabled} />
-        <ResizeTool disabled={disabled} />
-        <BorderTool disabled={disabled} />
-        <WatermarkTool disabled={disabled} />
-        <BgRemovalAITool disabled={disabled} />
-        <CropAITool disabled={disabled} />
-        <ObjectAITool disabled={disabled} />
-        <PeopleAITool disabled={disabled} />
-        <TextAITool disabled={disabled} />
-        <UpgradeAITool disabled={disabled} />
+        <BrightnessTool disabled={disabled} shareToken={shareToken} />
+        <ContrastTool disabled={disabled} shareToken={shareToken} />
+        <SaturationTool disabled={disabled} shareToken={shareToken} />
+        <BinarizationTool disabled={disabled} shareToken={shareToken} />
+        <RotateTool disabled={disabled} shareToken={shareToken} />
+        <CropTool disabled={disabled} shareToken={shareToken} />
+        <ResizeTool disabled={disabled} shareToken={shareToken} />
+        <BorderTool disabled={disabled} shareToken={shareToken} />
+        <WatermarkTool disabled={disabled} shareToken={shareToken} />
+        <BgRemovalAITool disabled={disabled} shareToken={shareToken} />
+        <CropAITool disabled={disabled} shareToken={shareToken} />
+        <ObjectAITool disabled={disabled} shareToken={shareToken} />
+        <PeopleAITool disabled={disabled} shareToken={shareToken} />
+        <TextAITool disabled={disabled} shareToken={shareToken} />
+        <UpgradeAITool disabled={disabled} shareToken={shareToken} />
       </div>
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogTrigger asChild>
           <Button
             variant="outline"
             className="text-red-400 size-8"
-            disabled={project.tools.length === 0}
+            disabled={project.tools.length === 0 || readOnly}
           >
             <Eraser />
           </Button>
@@ -86,12 +96,19 @@ export function Toolbar() {
             <Button
               variant="destructive"
               onClick={() => {
-                clearTools.mutate({
-                  uid: session.user._id,
-                  pid: project._id,
-                  toolIds: project.tools.map((t) => t._id),
-                  token: session.token,
-                });
+                if (shareToken) {
+                  clearSharedTools.mutate({
+                    token: shareToken,
+                    toolIds: project.tools.map((t) => t._id),
+                  });
+                } else {
+                  clearTools.mutate({
+                    uid: session.user._id,
+                    pid: project._id,
+                    toolIds: project.tools.map((t) => t._id),
+                    token: session.token,
+                  });
+                }
                 setOpen(false);
               }}
             >

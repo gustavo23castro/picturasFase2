@@ -5,7 +5,13 @@ import { useEffect, useState } from "react";
 import { useProjectInfo } from "@/providers/project-provider";
 import { BinarizationToolParams } from "@/lib/tool-types";
 
-export default function BinarizationTool({ disabled }: { disabled: boolean }) {
+export default function BinarizationTool({
+  disabled,
+  shareToken,
+}: {
+  disabled: boolean;
+  shareToken?: string;
+}) {
   const project = useProjectInfo();
   const defaultValue = 0;
   const [value, setValue] = useState<number>(defaultValue);
@@ -24,6 +30,7 @@ export default function BinarizationTool({ disabled }: { disabled: boolean }) {
     <ToolbarButton
       open={open}
       setOpen={setOpen}
+      shareToken={shareToken}
       tool={{
         procedure: "binarization",
         params: {

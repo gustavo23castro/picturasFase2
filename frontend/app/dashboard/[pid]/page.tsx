@@ -4,6 +4,8 @@ import { Download, LoaderCircle, OctagonAlert, Play } from "lucide-react";
 import { ProjectImageList } from "@/components/project-page/project-image-list";
 import { ViewToggle } from "@/components/project-page/view-toggle";
 import { AddImagesDialog } from "@/components/project-page/add-images-dialog";
+import { ShareDialog } from "@/components/project-page/share-dialog";
+import { PipelineDialog } from "@/components/project-page/pipeline-dialog";
 import { Button } from "@/components/ui/button";
 import { Toolbar } from "@/components/toolbar/toolbar";
 import {
@@ -13,12 +15,13 @@ import {
 } from "@/lib/queries/projects";
 import Loading from "@/components/loading";
 import { ProjectProvider } from "@/providers/project-provider";
-import { use, useEffect, useLayoutEffect, useState } from "react";
+import { use, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { useSession } from "@/providers/session-provider";
 import {
   useDownloadProject,
   useDownloadProjectResults,
+  useCancelProjectProcess,
   useProcessProject,
 } from "@/lib/mutations/projects";
 import { useToast } from "@/hooks/use-toast";
@@ -43,9 +46,10 @@ export default function Project({
   const project = useGetProject(session.user._id, pid, session.token);
   const downloadProjectImages = useDownloadProject();
   const processProject = useProcessProject();
+  const cancelProcess = useCancelProjectProcess();
   const downloadProjectResults = useDownloadProjectResults();
   const { toast } = useToast();
-  const socket = useGetSocket(session.token);
+  const socket = useGetSocket(session.token, project.data?._id);
   const searchParams = useSearchParams();
   const view = searchParams.get("view") ?? "grid";
   const mode = searchParams.get("mode") ?? "edit";
@@ -58,6 +62,9 @@ export default function Project({
   const [processingProgress, setProcessingProgress] = useState<number>(0);
   const [processingSteps, setProcessingSteps] = useState<number>(1);
   const [waitingForPreview, setWaitingForPreview] = useState<string>("");
+  const [toolModalOpen, setToolModalOpen] = useState<boolean>(false);
+  const [showCancel, setShowCancel] = useState<boolean>(false);
+  const cancelTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const totalProcessingSteps =
     (project.data?.tools.length ?? 0) * (project.data?.imgs.length ?? 0);
@@ -79,6 +86,7 @@ export default function Project({
 
   useEffect(() => {
     function onProcessUpdate() {
+      if (!processing) return;
       setProcessingSteps((prev) => prev + 1);
 
       const progress = Math.min(
@@ -91,6 +99,11 @@ export default function Project({
         setTimeout(() => {
           projectResults.refetch().then(() => {
             setProcessing(false);
+            setShowCancel(false);
+            if (cancelTimerRef.current) {
+              clearTimeout(cancelTimerRef.current);
+              cancelTimerRef.current = null;
+            }
             if (!isMobile) sidebar.setOpen(true);
             setProcessingProgress(0);
             setProcessingSteps(1);
@@ -106,14 +119,29 @@ export default function Project({
       socket.data.on("process-update", () => {
         if (active) onProcessUpdate();
       });
+      socket.data.on("process-canceled", () => {
+        if (!active) return;
+        setProcessing(false);
+        setShowCancel(false);
+        if (cancelTimerRef.current) {
+          clearTimeout(cancelTimerRef.current);
+          cancelTimerRef.current = null;
+        }
+        setProcessingProgress(0);
+        setProcessingSteps(1);
+      });
     }
 
     return () => {
       active = false;
-      if (socket.data) socket.data.off("process-update", onProcessUpdate);
+      if (socket.data) {
+        socket.data.off("process-update", onProcessUpdate);
+        socket.data.off("process-canceled");
+      }
     };
   }, [
     pid,
+    processing,
     processingSteps,
     qc,
     router,
@@ -125,6 +153,21 @@ export default function Project({
     isMobile,
     projectResults,
   ]);
+
+  useEffect(() => {
+    function onProjectUpdate() {
+      project.refetch();
+      projectResults.refetch();
+    }
+
+    if (socket.data) {
+      socket.data.on("project-update", onProjectUpdate);
+    }
+
+    return () => {
+      if (socket.data) socket.data.off("project-update", onProjectUpdate);
+    };
+  }, [socket.data, project, projectResults]);
 
   if (project.isError)
     return (
@@ -157,6 +200,7 @@ export default function Project({
       project={project.data}
       currentImage={currentImage}
       preview={{ waiting: waitingForPreview, setWaiting: setWaitingForPreview }}
+      toolModal={{ open: toolModalOpen, setOpen: setToolModalOpen }}
     >
       <div className="flex flex-col h-screen relative">
         {/* Header */}
@@ -190,6 +234,14 @@ export default function Project({
                         {
                           onSuccess: () => {
                             setProcessing(true);
+                            setShowCancel(false);
+                            if (cancelTimerRef.current) {
+                              clearTimeout(cancelTimerRef.current);
+                            }
+                            cancelTimerRef.current = setTimeout(
+                              () => setShowCancel(true),
+                              10000,
+                            );
                             sidebar.setOpen(false);
                           },
                           onError: (error) =>
@@ -204,6 +256,8 @@ export default function Project({
                   >
                     <Play /> Apply
                   </Button>
+                  <ShareDialog />
+                  <PipelineDialog />
                   <AddImagesDialog />
                 </>
               )}
@@ -273,6 +327,28 @@ export default function Project({
               <LoaderCircle className="size-[1em] animate-spin" />
             </div>
             <Progress value={processingProgress} className="w-96" />
+            {showCancel && (
+              <Button
+                variant="destructive"
+                onClick={() => {
+                  cancelProcess.mutate({
+                    uid: session.user._id,
+                    pid: project.data._id,
+                    token: session.token,
+                  });
+                  setProcessing(false);
+                  setShowCancel(false);
+                  if (cancelTimerRef.current) {
+                    clearTimeout(cancelTimerRef.current);
+                    cancelTimerRef.current = null;
+                  }
+                  setProcessingProgress(0);
+                  setProcessingSteps(1);
+                }}
+              >
+                Cancel
+              </Button>
+            )}
           </Card>
         </div>
       </Transition>

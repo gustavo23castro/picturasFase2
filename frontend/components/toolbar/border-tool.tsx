@@ -8,7 +8,13 @@ import { Input } from "../ui/input";
 import { Label } from "../ui/label";
 import { HexColorInput, HexColorPicker } from "react-colorful";
 
-export default function BorderTool({ disabled }: { disabled: boolean }) {
+export default function BorderTool({
+  disabled,
+  shareToken,
+}: {
+  disabled: boolean;
+  shareToken?: string;
+}) {
   const project = useProjectInfo();
   const defaultWidth = 1;
   const defaultColor = "#000000";
@@ -37,6 +43,7 @@ export default function BorderTool({ disabled }: { disabled: boolean }) {
     <ToolbarButton
       open={open}
       setOpen={setOpen}
+      shareToken={shareToken}
       tool={{
         procedure: "border",
         params: {

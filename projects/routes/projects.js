@@ -1,6 +1,7 @@
 var express = require("express");
 var router = express.Router();
 const axios = require("axios");
+const crypto = require("crypto");
 
 const multer = require("multer");
 const FormData = require("form-data");
@@ -20,13 +21,17 @@ const {
   send_msg_client_error,
   send_msg_client_preview,
   send_msg_client_preview_error,
+  send_msg_client_cancel,
+  send_msg_project_update,
   read_msg,
 } = require("../utils/project_msg");
 
 const Project = require("../controllers/project");
 const Process = require("../controllers/process");
+const ProcessMetric = require("../controllers/process_metric");
 const Result = require("../controllers/result");
 const Preview = require("../controllers/preview");
+const ShareLink = require("../controllers/share_link");
 
 const {
   get_image_docker,
@@ -77,6 +82,7 @@ function advanced_tool_num(project) {
 // TODO process message according to type of output
 function process_msg() {
   read_msg(async (msg) => {
+    let process = null;
     try {
       const msg_content = JSON.parse(msg.content.toString());
       const msg_id = msg_content.correlationId;
@@ -84,10 +90,41 @@ function process_msg() {
 
       const user_msg_id = `update-client-process-${uuidv4()}`;
 
-      const process = await Process.getOne(msg_id);
+      process = await Process.getOne(msg_id);
+      if (!process) return;
+
+      const project = await Project.getOne(process.user_id, process.project_id);
+      if (!project) return;
+
+      if (!project.processing) {
+        project.processing = {
+          active_run_id: null,
+          active_preview_run_id: null,
+          canceled_runs: [],
+          canceled_preview_runs: [],
+          updated_at: new Date(),
+        };
+      }
+
+      const processing = project.processing;
+      const is_preview = process.mode === "preview";
+      const active_run_id = is_preview
+        ? processing.active_preview_run_id
+        : processing.active_run_id;
+      const canceled_runs = is_preview
+        ? processing.canceled_preview_runs || []
+        : processing.canceled_runs || [];
+
+      if (active_run_id !== process.run_id) return;
+      if (canceled_runs.includes(process.run_id)) return;
 
       const prev_process_input_img = process.og_img_uri;
       const prev_process_output_img = process.new_img_uri;
+
+      const processing_time =
+        msg_content.metadata && msg_content.metadata.processingTime
+          ? msg_content.metadata.processingTime
+          : null;
       
       // Get current process, delete it and create it's sucessor if possible
       const og_img_uri = process.og_img_uri;
@@ -96,9 +133,17 @@ function process_msg() {
       await Process.delete(process.user_id, process.project_id, process._id);
       
       if (msg_content.status === "error") {
+        await recordProcessMetric(process, project, "error", processing_time);
         console.log(JSON.stringify(msg_content));
         if (/preview/.test(msg_id)) {
-          send_msg_client_preview_error(`update-client-preview-${uuidv4()}`, timestamp, process.user_id, msg_content.error.code, msg_content.error.msg)
+          send_msg_client_preview_error(
+            `update-client-preview-${uuidv4()}`,
+            timestamp,
+            process.user_id,
+            msg_content.error.code,
+            msg_content.error.msg,
+            process.project_id
+          );
         }
         
         else {
@@ -107,7 +152,8 @@ function process_msg() {
             timestamp,
             process.user_id,
             msg_content.error.code,
-            msg_content.error.msg
+            msg_content.error.msg,
+            process.project_id
           );
         }
         return;
@@ -115,7 +161,6 @@ function process_msg() {
       
       const output_file_uri = msg_content.output.imageURI;
       const type = msg_content.output.type;
-      const project = await Project.getOne(process.user_id, process.project_id);
 
       const next_pos = process.cur_pos + 1;
 
@@ -181,19 +226,34 @@ function process_msg() {
             `update-client-preview-${uuidv4()}`,
             timestamp,
             process.user_id,
-            JSON.stringify(urls)
+            JSON.stringify(urls),
+            process.project_id
           );
 
         }
       }
 
-      if(/preview/.test(msg_id) && next_pos >= project.tools.length) return;
+      if (/preview/.test(msg_id) && next_pos >= project.tools.length) {
+        const remaining = await Process.getByRunId(
+          project._id,
+          process.run_id,
+        );
+        if (remaining.length === 0) {
+          project.processing.active_preview_run_id = null;
+          project.processing.updated_at = new Date();
+          await Project.update(project.user_id, project._id, project);
+        }
+        return;
+      }
+
+      await recordProcessMetric(process, project, "success", processing_time);
 
       if (!/preview/.test(msg_id))
         send_msg_client(
           user_msg_id,
           timestamp,
-          process.user_id
+          process.user_id,
+          process.project_id
         );
 
       if (!/preview/.test(msg_id) && (type == "text" || next_pos >= project.tools.length)) {
@@ -231,7 +291,18 @@ function process_msg() {
         await Result.create(result);
       }
 
-      if (next_pos >= project.tools.length) return;
+      if (next_pos >= project.tools.length) {
+        const remaining = await Process.getByRunId(
+          project._id,
+          process.run_id,
+        );
+        if (remaining.length === 0) {
+          project.processing.active_run_id = null;
+          project.processing.updated_at = new Date();
+          await Project.update(project.user_id, project._id, project);
+        }
+        return;
+      }
 
       const new_msg_id = /preview/.test(msg_id)
         ? `preview-${uuidv4()}`
@@ -250,6 +321,8 @@ function process_msg() {
         project_id: project._id,
         img_id: img_id,
         msg_id: new_msg_id,
+        run_id: process.run_id,
+        mode: process.mode,
         cur_pos: next_pos,
         og_img_uri: read_img,
         new_img_uri: output_img,
@@ -266,17 +339,708 @@ function process_msg() {
         params
       );
     } catch (_) {
-      send_msg_client_error(
-        user_msg_id,
-        timestamp,
-        process.user_id,
-        "30000",
-        "An error happened while processing the project"
-      );
+      if (process && process.user_id) {
+        send_msg_client_error(
+          `update-client-process-${uuidv4()}`,
+          new Date().toISOString(),
+          process.user_id,
+          "30000",
+          "An error happened while processing the project",
+          process.project_id
+        );
+      }
       return;
     }
   });
 }
+
+async function getShareContext(token) {
+  const share = await ShareLink.getByToken(token);
+  if (!share || share.revoked) return null;
+
+  const project = await Project.getOne(share.owner_id, share.project_id);
+  if (!project) return null;
+
+  await ShareLink.touchAccess(token);
+
+  return { share, project };
+}
+
+function ensureShareEdit(share, res) {
+  if (share.permission !== "edit") {
+    res.status(403).jsonp("Link does not grant edit permissions");
+    return false;
+  }
+  return true;
+}
+
+async function handlePreviewRequest(user_id, project_id, img_id, res) {
+  const project = await Project.getOne(user_id, project_id);
+  if (!project) {
+    res.status(404).jsonp("Project not found");
+    return;
+  }
+
+  if (!project.processing) {
+    project.processing = {
+      active_run_id: null,
+      active_preview_run_id: null,
+      canceled_runs: [],
+      canceled_preview_runs: [],
+      updated_at: new Date(),
+    };
+  }
+
+  const prev_preview = await Preview.getAll(user_id, project_id);
+
+  for (let p of prev_preview) {
+    await delete_image(user_id, project_id, "preview", p.img_key);
+    await Preview.delete(user_id, project_id, p.img_id);
+  }
+
+  const source_path = `/../images/users/${user_id}/projects/${project_id}/src`;
+  const result_path = `/../images/users/${user_id}/projects/${project_id}/preview`;
+
+  if (!fs.existsSync(path.join(__dirname, source_path)))
+    fs.mkdirSync(path.join(__dirname, source_path), { recursive: true });
+
+  if (!fs.existsSync(path.join(__dirname, result_path)))
+    fs.mkdirSync(path.join(__dirname, result_path), { recursive: true });
+
+  const img = project.imgs.filter((i) => i._id == img_id)[0];
+  if (!img) {
+    res.status(404).jsonp("No image with such id.");
+    return;
+  }
+
+  const msg_id = `preview-${uuidv4()}`;
+  const timestamp = new Date().toISOString();
+  const og_img_uri = img.og_uri;
+  const img_db_id = img._id;
+
+  const resp = await get_image_docker(
+    user_id,
+    project_id,
+    "src",
+    img.og_img_key
+  );
+  const url = resp.data.url;
+
+  const img_resp = await axios.get(url, { responseType: "stream" });
+
+  const writer = fs.createWriteStream(og_img_uri);
+
+  await new Promise((resolve, reject) => {
+    writer.on("finish", resolve);
+    writer.on("error", reject);
+    img_resp.data.pipe(writer);
+  });
+
+  const img_name_parts = img.new_uri.split("/");
+  const img_name = img_name_parts[img_name_parts.length - 1];
+  const new_img_uri = `./images/users/${user_id}/projects/${project_id}/preview/${img_name}`;
+
+  const tool = project.tools.filter((t) => t.position == 0)[0];
+  if (!tool) {
+    res.status(400).jsonp("No tools selected");
+    return;
+  }
+
+  const run_id = `preview-${uuidv4()}`;
+  project.processing.active_preview_run_id = run_id;
+  project.processing.updated_at = new Date();
+  await Project.update(user_id, project_id, project);
+
+  const process = {
+    user_id: user_id,
+    project_id: project_id,
+    img_id: img_db_id,
+    msg_id: msg_id,
+    run_id: project.processing.active_preview_run_id,
+    mode: "preview",
+    cur_pos: 0,
+    og_img_uri: og_img_uri,
+    new_img_uri: new_img_uri,
+  };
+
+  await Process.create(process);
+
+  send_msg_tool(
+    msg_id,
+    timestamp,
+    og_img_uri,
+    new_img_uri,
+    tool.procedure,
+    tool.params
+  );
+
+  res.sendStatus(201);
+}
+
+async function handleProcessRequest(user_id, project_id, res) {
+  const project = await Project.getOne(user_id, project_id);
+  if (!project) {
+    res.status(404).jsonp("Project not found");
+    return;
+  }
+
+  if (!project.processing) {
+    project.processing = {
+      active_run_id: null,
+      active_preview_run_id: null,
+      canceled_runs: [],
+      canceled_preview_runs: [],
+      updated_at: new Date(),
+    };
+  }
+
+  try {
+    const prev_results = await Result.getAll(user_id, project_id);
+    for (let r of prev_results) {
+      await delete_image(user_id, project_id, "out", r.img_key);
+      await Result.delete(r.user_id, r.project_id, r.img_id);
+    }
+  } catch (_) {
+    res.status(400).jsonp("Error deleting previous results");
+    return;
+  }
+
+  if (project.tools.length == 0) {
+    res.status(400).jsonp("No tools selected");
+    return;
+  }
+
+  const adv_tools = advanced_tool_num(project);
+  let can_process = true;
+  try {
+    const resp = await axios.get(users_ms + `${user_id}/process/${adv_tools}`, {
+      httpsAgent: httpsAgent,
+    });
+    can_process = resp.data;
+  } catch (_) {
+    res.status(400).jsonp(`Error checking if can process`);
+    return;
+  }
+
+  if (!can_process) {
+    res.status(404).jsonp("No more daily_operations available");
+    return;
+  }
+
+  const run_id = `process-${uuidv4()}`;
+  project.processing.active_run_id = run_id;
+  project.processing.updated_at = new Date();
+  project.processing.canceled_runs =
+    project.processing.canceled_runs?.filter((id) => id !== run_id) || [];
+  await Project.update(user_id, project_id, project);
+
+  const source_path = `/../images/users/${user_id}/projects/${project_id}/src`;
+  const result_path = `/../images/users/${user_id}/projects/${project_id}/out`;
+
+  if (fs.existsSync(path.join(__dirname, source_path)))
+    fs.rmSync(path.join(__dirname, source_path), {
+      recursive: true,
+      force: true,
+    });
+
+  fs.mkdirSync(path.join(__dirname, source_path), { recursive: true });
+
+  if (fs.existsSync(path.join(__dirname, result_path)))
+    fs.rmSync(path.join(__dirname, result_path), {
+      recursive: true,
+      force: true,
+    });
+
+  fs.mkdirSync(path.join(__dirname, result_path), { recursive: true });
+
+  try {
+    await Promise.all(
+      project.imgs.map(async (img) => {
+        const resp = await get_image_docker(
+          user_id,
+          project_id,
+          "src",
+          img.og_img_key
+        );
+        const url = resp.data.url;
+
+        const img_resp = await axios.get(url, { responseType: "stream" });
+
+        const writer = fs.createWriteStream(img.og_uri);
+
+        await new Promise((resolve, reject) => {
+          writer.on("finish", resolve);
+          writer.on("error", reject);
+          img_resp.data.pipe(writer);
+        });
+      })
+    );
+  } catch (_) {
+    res.status(400).jsonp("Error acquiring source images");
+    return;
+  }
+
+  const tool = project.tools.filter((t) => t.position === 0)[0];
+
+  const results = await Promise.allSettled(
+    project.imgs.map(async (img) => {
+      const msg_id = `request-${uuidv4()}`;
+      const timestamp = new Date().toISOString();
+
+      const og_img_uri = img.og_uri;
+      const new_img_uri = img.new_uri;
+
+      const process = {
+        user_id: user_id,
+        project_id: project_id,
+        img_id: img._id,
+        msg_id: msg_id,
+        run_id: project.processing.active_run_id,
+        mode: "process",
+        cur_pos: 0,
+        og_img_uri: og_img_uri,
+        new_img_uri: new_img_uri,
+      };
+
+      await Process.create(process);
+      send_msg_tool(
+        msg_id,
+        timestamp,
+        og_img_uri,
+        new_img_uri,
+        tool.procedure,
+        tool.params
+      );
+    })
+  );
+
+  const error = results.some((result) => result.status === "rejected");
+
+  if (error)
+    res
+      .status(603)
+      .jsonp(
+        `There were some erros creating all process requests. Some results can be invalid.`
+      );
+  else res.sendStatus(201);
+}
+
+async function cancelProjectRun(user_id, project_id, mode) {
+  const project = await Project.getOne(user_id, project_id);
+  if (!project || !project.processing) return null;
+
+  const is_preview = mode === "preview";
+  const run_id = is_preview
+    ? project.processing.active_preview_run_id
+    : project.processing.active_run_id;
+
+  if (!run_id) return null;
+
+  if (is_preview) {
+    project.processing.active_preview_run_id = null;
+    project.processing.canceled_preview_runs =
+      project.processing.canceled_preview_runs || [];
+    if (!project.processing.canceled_preview_runs.includes(run_id)) {
+      project.processing.canceled_preview_runs.push(run_id);
+    }
+  } else {
+    project.processing.active_run_id = null;
+    project.processing.canceled_runs = project.processing.canceled_runs || [];
+    if (!project.processing.canceled_runs.includes(run_id)) {
+      project.processing.canceled_runs.push(run_id);
+    }
+  }
+
+  project.processing.updated_at = new Date();
+  await Project.update(user_id, project_id, project);
+
+  const processes = await Process.getByRunId(project._id, run_id);
+  for (let p of processes) {
+    await Process.delete(p.user_id, p.project_id, p._id);
+  }
+
+  return { project, run_id };
+}
+
+async function recordProcessMetric(process, project, status, processingTime) {
+  try {
+    const tool = project.tools.filter((t) => t.position == process.cur_pos)[0];
+    if (!tool) return;
+
+    await ProcessMetric.create({
+      user_id: process.user_id,
+      project_id: process.project_id,
+      run_id: process.run_id,
+      mode: process.mode,
+      tool: tool.procedure,
+      tool_pos: process.cur_pos,
+      img_id: process.img_id,
+      status: status,
+      processing_time_ms: processingTime,
+    });
+  } catch (_) {
+    return;
+  }
+}
+
+// Share: access project by token (unauthenticated)
+router.get("/share/:token", async (req, res) => {
+  try {
+    const ctx = await getShareContext(req.params.token);
+    if (!ctx) return res.status(404).jsonp("Invalid or revoked link");
+
+    const { share, project } = ctx;
+
+    const response = {
+      _id: project._id,
+      user_id: project.user_id,
+      name: project.name,
+      tools: project.tools,
+      imgs: [],
+      permission: share.permission,
+    };
+
+    for (let img of project.imgs) {
+      const resp = await get_image_host(
+        project.user_id,
+        project._id,
+        "src",
+        img.og_img_key
+      );
+      response["imgs"].push({
+        _id: img._id,
+        name: path.basename(img.og_uri),
+        url: resp.data.url,
+      });
+    }
+
+    res.status(200).jsonp(response);
+  } catch (_) {
+    res.status(500).jsonp("Error acquiring shared project");
+  }
+});
+
+router.get("/share/:token/imgs", async (req, res) => {
+  try {
+    const ctx = await getShareContext(req.params.token);
+    if (!ctx) return res.status(404).jsonp("Invalid or revoked link");
+
+    const { project } = ctx;
+    const ans = [];
+
+    for (let img of project.imgs) {
+      const resp = await get_image_host(
+        project.user_id,
+        project._id,
+        "src",
+        img.og_img_key
+      );
+      ans.push({
+        _id: img._id,
+        name: path.basename(img.og_uri),
+        url: resp.data.url,
+      });
+    }
+
+    res.status(200).jsonp(ans);
+  } catch (_) {
+    res.status(500).jsonp("Error acquiring shared project images");
+  }
+});
+
+router.get("/share/:token/img/:img", async (req, res) => {
+  try {
+    const ctx = await getShareContext(req.params.token);
+    if (!ctx) return res.status(404).jsonp("Invalid or revoked link");
+
+    const { project } = ctx;
+    const img = project.imgs.filter((i) => i._id == req.params.img)[0];
+    if (!img) return res.status(404).jsonp("No image with such id.");
+
+    const resp = await get_image_host(
+      project.user_id,
+      project._id,
+      "src",
+      img.og_img_key
+    );
+
+    res.status(200).jsonp({
+      _id: img._id,
+      name: path.basename(img.og_uri),
+      url: resp.data.url,
+    });
+  } catch (_) {
+    res.status(500).jsonp("Error acquiring shared project image");
+  }
+});
+
+router.get("/share/:token/process/url", async (req, res) => {
+  try {
+    const ctx = await getShareContext(req.params.token);
+    if (!ctx) return res.status(404).jsonp("Invalid or revoked link");
+
+    const { project } = ctx;
+    const results = await Result.getAll(project.user_id, project._id);
+
+    const ans = { imgs: [], texts: [] };
+    for (let r of results) {
+      const resp = await get_image_host(
+        project.user_id,
+        project._id,
+        "out",
+        r.img_key
+      );
+      const url = resp.data.url;
+
+      if (r.type == "text")
+        ans.texts.push({ og_img_id: r.img_id, name: r.file_name, url: url });
+      else ans.imgs.push({ og_img_id: r.img_id, name: r.file_name, url: url });
+    }
+
+    res.status(200).jsonp(ans);
+  } catch (_) {
+    res.status(500).jsonp("Error acquiring shared project results");
+  }
+});
+
+// Share: manage links (authenticated)
+router.get("/:user/:project/share", (req, res) => {
+  ShareLink.getActiveByProject(req.params.user, req.params.project)
+    .then((links) =>
+      res.status(200).jsonp(
+        links.map((link) => ({
+          token: link.token,
+          permission: link.permission,
+          created_at: link.created_at,
+        }))
+      )
+    )
+    .catch((_) => res.status(500).jsonp("Error acquiring share links"));
+});
+
+router.post("/:user/:project/share", (req, res) => {
+  const permission = req.body.permission;
+  const has_unsaved = req.body.unsaved === true;
+
+  if (has_unsaved) {
+    res.status(409).jsonp("Save your project before sharing");
+    return;
+  }
+
+  if (!["view", "edit"].includes(permission)) {
+    res.status(400).jsonp("Invalid permission");
+    return;
+  }
+
+  const token = crypto.randomBytes(32).toString("hex");
+  const link = {
+    token: token,
+    project_id: req.params.project,
+    owner_id: req.params.user,
+    permission: permission,
+  };
+
+  ShareLink.create(link)
+    .then((shareLink) =>
+      res.status(201).jsonp({
+        token: shareLink.token,
+        permission: shareLink.permission,
+        created_at: shareLink.created_at,
+      })
+    )
+    .catch((_) => res.status(500).jsonp("Error creating share link"));
+});
+
+router.post("/:user/:project/share/:token/revoke", (req, res) => {
+  ShareLink.revoke(req.params.token)
+    .then((_) => res.sendStatus(204))
+    .catch((_) => res.status(500).jsonp("Error revoking share link"));
+});
+
+router.post("/share/:token/tool", async (req, res) => {
+  try {
+    const ctx = await getShareContext(req.params.token);
+    if (!ctx) return res.status(404).jsonp("Invalid or revoked link");
+    if (!ensureShareEdit(ctx.share, res)) return;
+
+    const { project } = ctx;
+    const tool = {
+      position: project.tools.length,
+      ...req.body,
+    };
+
+    project.tools.push(tool);
+    await Project.update(project.user_id, project._id, project);
+
+    send_msg_project_update(
+      `update-project-${uuidv4()}`,
+      new Date().toISOString(),
+      project._id
+    );
+
+    res.sendStatus(201);
+  } catch (_) {
+    res.status(503).jsonp("Error updating shared project");
+  }
+});
+
+router.put("/share/:token/tool/:tool", async (req, res) => {
+  try {
+    const ctx = await getShareContext(req.params.token);
+    if (!ctx) return res.status(404).jsonp("Invalid or revoked link");
+    if (!ensureShareEdit(ctx.share, res)) return;
+
+    const { project } = ctx;
+    const tool_pos = project.tools.findIndex((i) => i._id == req.params.tool);
+    if (tool_pos < 0)
+      return res.status(404).jsonp("Error updating tool. Tool not found.");
+
+    const prev_tool = project.tools[tool_pos];
+    project.tools[tool_pos] = {
+      position: prev_tool.position,
+      procedure: prev_tool.procedure,
+      params: req.body.params,
+      _id: prev_tool._id,
+    };
+
+    await Project.update(project.user_id, project._id, project);
+
+    send_msg_project_update(
+      `update-project-${uuidv4()}`,
+      new Date().toISOString(),
+      project._id
+    );
+
+    res.sendStatus(204);
+  } catch (_) {
+    res.status(503).jsonp("Error updating shared project");
+  }
+});
+
+router.delete("/share/:token/tool/:tool", async (req, res) => {
+  try {
+    const ctx = await getShareContext(req.params.token);
+    if (!ctx) return res.status(404).jsonp("Invalid or revoked link");
+    if (!ensureShareEdit(ctx.share, res)) return;
+
+    const { project } = ctx;
+    const tool_pos = project.tools.findIndex((i) => i._id == req.params.tool);
+    if (tool_pos < 0) return res.sendStatus(204);
+
+    project.tools.splice(tool_pos, 1);
+    project.tools = project.tools.map((t, idx) => ({
+      ...t,
+      position: idx,
+    }));
+
+    await Project.update(project.user_id, project._id, project);
+
+    send_msg_project_update(
+      `update-project-${uuidv4()}`,
+      new Date().toISOString(),
+      project._id
+    );
+
+    res.sendStatus(204);
+  } catch (_) {
+    res.status(503).jsonp("Error updating shared project");
+  }
+});
+
+router.post("/share/:token/reorder", async (req, res) => {
+  try {
+    const ctx = await getShareContext(req.params.token);
+    if (!ctx) return res.status(404).jsonp("Invalid or revoked link");
+    if (!ensureShareEdit(ctx.share, res)) return;
+
+    const { project } = ctx;
+    project.tools = [];
+
+    for (let t of req.body) {
+      project.tools.push({
+        position: project.tools.length,
+        ...t,
+      });
+    }
+
+    await Project.update(project.user_id, project._id, project);
+
+    send_msg_project_update(
+      `update-project-${uuidv4()}`,
+      new Date().toISOString(),
+      project._id
+    );
+
+    res.sendStatus(204);
+  } catch (_) {
+    res.status(503).jsonp("Error updating shared project");
+  }
+});
+
+router.post("/share/:token/preview/:img", async (req, res) => {
+  try {
+    const ctx = await getShareContext(req.params.token);
+    if (!ctx) return res.status(404).jsonp("Invalid or revoked link");
+    if (!ensureShareEdit(ctx.share, res)) return;
+
+    await handlePreviewRequest(
+      ctx.project.user_id,
+      ctx.project._id,
+      req.params.img,
+      res
+    );
+  } catch (_) {
+    res.status(500).jsonp("Error creating shared preview");
+  }
+});
+
+router.post("/share/:token/process", async (req, res) => {
+  try {
+    const ctx = await getShareContext(req.params.token);
+    if (!ctx) return res.status(404).jsonp("Invalid or revoked link");
+    if (!ensureShareEdit(ctx.share, res)) return;
+
+    await handleProcessRequest(ctx.project.user_id, ctx.project._id, res);
+  } catch (_) {
+    res.status(500).jsonp("Error processing shared project");
+  }
+});
+
+router.post("/share/:token/process/cancel", async (req, res) => {
+  try {
+    const ctx = await getShareContext(req.params.token);
+    if (!ctx) return res.status(404).jsonp("Invalid or revoked link");
+    if (!ensureShareEdit(ctx.share, res)) return;
+
+    const result = await cancelProjectRun(
+      ctx.project.user_id,
+      ctx.project._id,
+      "process"
+    );
+    if (!result) return res.sendStatus(204);
+    res.sendStatus(204);
+  } catch (_) {
+    res.status(500).jsonp("Error canceling shared processing");
+  }
+});
+
+router.post("/share/:token/preview/cancel", async (req, res) => {
+  try {
+    const ctx = await getShareContext(req.params.token);
+    if (!ctx) return res.status(404).jsonp("Invalid or revoked link");
+    if (!ensureShareEdit(ctx.share, res)) return;
+
+    const result = await cancelProjectRun(
+      ctx.project.user_id,
+      ctx.project._id,
+      "preview"
+    );
+    if (!result) return res.sendStatus(204);
+    res.sendStatus(204);
+  } catch (_) {
+    res.status(500).jsonp("Error canceling shared preview");
+  }
+});
 
 // Get list of all projects from a user
 router.get("/:user", (req, res, next) => {
@@ -520,106 +1284,14 @@ router.post("/:user", (req, res, next) => {
 
 // Preview an image
 router.post("/:user/:project/preview/:img", (req, res, next) => {
-  // Get project and create a new process entry
-  console.log("entrou")
-  console.log(req.params.user, req.params.project, req.params.img)
-  Project.getOne(req.params.user, req.params.project)
-    .then(async (project) => {
-      const prev_preview = await Preview.getAll(
-        req.params.user,
-        req.params.project
-      );
-
-      for(let p of prev_preview){
-        await delete_image(
-          req.params.user,
-          req.params.project,
-          "preview",
-          p.img_key
-        );
-        await Preview.delete(
-          req.params.user,
-          req.params.project,
-          p.img_id
-        );
-      }
-
-      // Remove previous preview
-      if (prev_preview !== null && prev_preview !== undefined) {
-      }
-
-      const source_path = `/../images/users/${req.params.user}/projects/${req.params.project}/src`;
-      const result_path = `/../images/users/${req.params.user}/projects/${req.params.project}/preview`;
-
-      if (!fs.existsSync(path.join(__dirname, source_path)))
-        fs.mkdirSync(path.join(__dirname, source_path), { recursive: true });
-
-      if (!fs.existsSync(path.join(__dirname, result_path)))
-        fs.mkdirSync(path.join(__dirname, result_path), { recursive: true });
-
-      // Retrive image information
-      const img = project.imgs.filter((i) => i._id == req.params.img)[0];
-      const msg_id = `preview-${uuidv4()}`;
-      const timestamp = new Date().toISOString();
-      const og_img_uri = img.og_uri;
-      const img_id = img._id;
-
-      // Retrieve image and store it using file system
-      const resp = await get_image_docker(
-        req.params.user,
-        req.params.project,
-        "src",
-        img.og_img_key
-      );
-      const url = resp.data.url;
-
-      const img_resp = await axios.get(url, { responseType: "stream" });
-
-      const writer = fs.createWriteStream(og_img_uri);
-
-      // Use a Promise to handle the stream completion
-      await new Promise((resolve, reject) => {
-        writer.on("finish", resolve);
-        writer.on("error", reject);
-        img_resp.data.pipe(writer); // Pipe AFTER setting up the event handlers
-      });
-
-      const img_name_parts = img.new_uri.split("/");
-      const img_name = img_name_parts[img_name_parts.length - 1];
-      const new_img_uri = `./images/users/${req.params.user}/projects/${req.params.project}/preview/${img_name}`;
-
-      const tool = project.tools.filter((t) => t.position == 0)[0];
-      const tool_name = tool.procedure;
-      const params = tool.params;
-
-      const process = {
-        user_id: req.params.user,
-        project_id: req.params.project,
-        img_id: img_id,
-        msg_id: msg_id,
-        cur_pos: 0,
-        og_img_uri: og_img_uri,
-        new_img_uri: new_img_uri,
-      };
-
-      // Making sure database entry is created before sending message to avoid conflicts
-      Process.create(process)
-        .then((_) => {
-          send_msg_tool(
-            msg_id,
-            timestamp,
-            og_img_uri,
-            new_img_uri,
-            tool_name,
-            params
-          );
-          res.sendStatus(201);
-        })
-        .catch((_) =>
-          res.status(603).jsonp(`Error creating preview process request`)
-        );
-    })
-    .catch((_) => res.status(501).jsonp(`Error acquiring user's project`));
+  handlePreviewRequest(
+    req.params.user,
+    req.params.project,
+    req.params.img,
+    res
+  ).catch((_) =>
+    res.status(603).jsonp(`Error creating preview process request`)
+  );
 });
 
 // Add new image to a project
@@ -722,7 +1394,14 @@ router.post("/:user/:project/tool", (req, res, next) => {
           project["tools"].push(tool);
 
           Project.update(req.params.user, req.params.project, project)
-            .then((_) => res.sendStatus(204))
+            .then((_) => {
+              send_msg_project_update(
+                `update-project-${uuidv4()}`,
+                new Date().toISOString(),
+                project._id
+              );
+              res.sendStatus(204);
+            })
             .catch((_) =>
               res.status(503).jsonp(`Error updating project information`)
             );
@@ -749,7 +1428,14 @@ router.post("/:user/:project/reorder", (req, res, next) => {
       }
 
       Project.update(req.params.user, req.params.project, project)
-        .then((project) => res.status(204).jsonp(project))
+        .then((project) => {
+          send_msg_project_update(
+            `update-project-${uuidv4()}`,
+            new Date().toISOString(),
+            project._id
+          );
+          res.status(204).jsonp(project);
+        })
         .catch((_) =>
           res.status(503).jsonp(`Error updating project information`)
         );
@@ -759,137 +1445,55 @@ router.post("/:user/:project/reorder", (req, res, next) => {
 
 // Process a specific project
 router.post("/:user/:project/process", (req, res, next) => {
-  // Get project and create a new process entry
-  Project.getOne(req.params.user, req.params.project)
-    .then(async (project) => {
-      try {
-        const prev_results = await Result.getAll(
-          req.params.user,
-          req.params.project
-        );
-        for (let r of prev_results) {
-          await delete_image(
-            req.params.user,
-            req.params.project,
-            "out",
-            r.img_key
-          );
-          await Result.delete(r.user_id, r.project_id, r.img_id);
-        }
-      } catch (_) {
-        res.status(400).jsonp("Error deleting previous results");
-        return;
-      }
+  handleProcessRequest(req.params.user, req.params.project, res).catch((_) =>
+    res.status(501).jsonp(`Error acquiring user's project`)
+  );
+});
 
-      if (project.tools.length == 0) {
-        res.status(400).jsonp("No tools selected");
-        return;
-      }
+// Cancel a project's processing
+router.post("/:user/:project/process/cancel", (req, res, next) => {
+  cancelProjectRun(req.params.user, req.params.project, "process")
+    .then((result) => {
+      if (!result) return res.sendStatus(204);
 
-      const adv_tools = advanced_tool_num(project);
-      axios
-        .get(users_ms + `${req.params.user}/process/${adv_tools}`, {
-          httpsAgent: httpsAgent,
-        })
-        .then(async (resp) => {
-          const can_process = resp.data;
+      const timestamp = new Date().toISOString();
+      send_msg_client_cancel(
+        `update-client-cancel-${uuidv4()}`,
+        timestamp,
+        result.project.user_id,
+        result.run_id,
+        "process",
+      );
 
-          if (!can_process) {
-            res.status(404).jsonp("No more daily_operations available");
-            return;
-          }
+      res.sendStatus(204);
+    })
+    .catch((_) => res.status(501).jsonp(`Error acquiring user's project`));
+});
 
-          const source_path = `/../images/users/${req.params.user}/projects/${req.params.project}/src`;
-          const result_path = `/../images/users/${req.params.user}/projects/${req.params.project}/out`;
+// Get recent processing metrics for a project
+router.get("/:user/:project/metrics", (req, res) => {
+  const limit = parseInt(req.query.limit || "100");
+  ProcessMetric.getByProject(req.params.user, req.params.project, limit)
+    .then((metrics) => res.status(200).jsonp(metrics))
+    .catch((_) => res.status(500).jsonp("Error acquiring project metrics"));
+});
 
-          if (fs.existsSync(path.join(__dirname, source_path)))
-            fs.rmSync(path.join(__dirname, source_path), {
-              recursive: true,
-              force: true,
-            });
+// Cancel a project's preview processing
+router.post("/:user/:project/preview/cancel", (req, res, next) => {
+  cancelProjectRun(req.params.user, req.params.project, "preview")
+    .then((result) => {
+      if (!result) return res.sendStatus(204);
 
-          fs.mkdirSync(path.join(__dirname, source_path), { recursive: true });
+      const timestamp = new Date().toISOString();
+      send_msg_client_cancel(
+        `update-client-cancel-${uuidv4()}`,
+        timestamp,
+        result.project.user_id,
+        result.run_id,
+        "preview",
+      );
 
-          if (fs.existsSync(path.join(__dirname, result_path)))
-            fs.rmSync(path.join(__dirname, result_path), {
-              recursive: true,
-              force: true,
-            });
-
-          fs.mkdirSync(path.join(__dirname, result_path), { recursive: true });
-
-          let error = false;
-
-          for (let img of project.imgs) {
-            let url = "";
-            try {
-              const resp = await get_image_docker(
-                req.params.user,
-                req.params.project,
-                "src",
-                img.og_img_key
-              );
-              url = resp.data.url;
-
-              const img_resp = await axios.get(url, { responseType: "stream" });
-
-              const writer = fs.createWriteStream(img.og_uri);
-
-              // Use a Promise to handle the stream completion
-              await new Promise((resolve, reject) => {
-                writer.on("finish", resolve);
-                writer.on("error", reject);
-                img_resp.data.pipe(writer); // Pipe AFTER setting up the event handlers
-              });
-            } catch (_) {
-              res.status(400).jsonp("Error acquiring source images");
-              return;
-            }
-
-            const msg_id = `request-${uuidv4()}`;
-            const timestamp = new Date().toISOString();
-
-            const og_img_uri = img.og_uri;
-            const new_img_uri = img.new_uri;
-            const tool = project.tools.filter((t) => t.position === 0)[0];
-
-            const tool_name = tool.procedure;
-            const params = tool.params;
-
-            const process = {
-              user_id: req.params.user,
-              project_id: req.params.project,
-              img_id: img._id,
-              msg_id: msg_id,
-              cur_pos: 0,
-              og_img_uri: og_img_uri,
-              new_img_uri: new_img_uri,
-            };
-
-            // Making sure database entry is created before sending message to avoid conflicts
-            await Process.create(process)
-              .then((_) => {
-                send_msg_tool(
-                  msg_id,
-                  timestamp,
-                  og_img_uri,
-                  new_img_uri,
-                  tool_name,
-                  params
-                );
-              })
-              .catch((_) => (error = true));
-          }
-
-          if (error)
-            res
-              .status(603)
-              .jsonp(
-                `There were some erros creating all process requests. Some results can be invalid.`
-              );
-          else res.sendStatus(201);
-        })
-        .catch((_) => res.status(400).jsonp(`Error checking if can process`));
+      res.sendStatus(204);
     })
     .catch((_) => res.status(501).jsonp(`Error acquiring user's project`));
 });
@@ -900,7 +1504,14 @@ router.put("/:user/:project", (req, res, next) => {
     .then((project) => {
       project.name = req.body.name || project.name;
       Project.update(req.params.user, req.params.project, project)
-        .then((_) => res.sendStatus(204))
+        .then((_) => {
+          send_msg_project_update(
+            `update-project-${uuidv4()}`,
+            new Date().toISOString(),
+            project._id
+          );
+          res.sendStatus(204);
+        })
         .catch((_) =>
           res.status(503).jsonp(`Error updating project information`)
         );
@@ -927,7 +1538,14 @@ router.put("/:user/:project/tool/:tool", (req, res, next) => {
         };
 
         Project.update(req.params.user, req.params.project, project)
-          .then((_) => res.sendStatus(204))
+          .then((_) => {
+            send_msg_project_update(
+              `update-project-${uuidv4()}`,
+              new Date().toISOString(),
+              project._id
+            );
+            res.sendStatus(204);
+          })
           .catch((_) =>
             res.status(503).jsonp(`Error updating project information`)
           );
@@ -1037,7 +1655,14 @@ router.delete("/:user/:project/img/:img", (req, res, next) => {
         }
 
         Project.update(req.params.user, req.params.project, project)
-          .then((_) => res.sendStatus(204))
+          .then((_) => {
+            send_msg_project_update(
+              `update-project-${uuidv4()}`,
+              new Date().toISOString(),
+              project._id
+            );
+            res.sendStatus(204);
+          })
           .catch((_) =>
             res.status(503).jsonp(`Error updating project information`)
           );

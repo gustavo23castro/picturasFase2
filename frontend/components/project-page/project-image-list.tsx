@@ -55,7 +55,7 @@ export function ProjectImageList({
   const { toast } = useToast();
 
   const qc = useQueryClient();
-  const socket = useGetSocket(session.token);
+  const socket = useGetSocket(session.token, project._id);
 
   useEffect(() => {
     let active = true;

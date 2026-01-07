@@ -7,7 +7,13 @@ import { useCurrentImage, useProjectInfo } from "@/providers/project-provider";
 import { getImageDimensions } from "@/lib/utils";
 import { CropToolParams } from "@/lib/tool-types";
 
-export default function CropTool({ disabled }: { disabled: boolean }) {
+export default function CropTool({
+  disabled,
+  shareToken,
+}: {
+  disabled: boolean;
+  shareToken?: string;
+}) {
   const project = useProjectInfo();
 
   const defaultValue = 0;
@@ -73,6 +79,7 @@ export default function CropTool({ disabled }: { disabled: boolean }) {
     <ToolbarButton
       open={open}
       setOpen={setOpen}
+      shareToken={shareToken}
       tool={{
         procedure: "cut",
         params: {

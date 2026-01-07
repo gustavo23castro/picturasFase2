@@ -5,7 +5,13 @@ import { useEffect, useState } from "react";
 import { useProjectInfo } from "@/providers/project-provider";
 import { RotateToolParams } from "@/lib/tool-types";
 
-export default function RotateTool({ disabled }: { disabled: boolean }) {
+export default function RotateTool({
+  disabled,
+  shareToken,
+}: {
+  disabled: boolean;
+  shareToken?: string;
+}) {
   const project = useProjectInfo();
   const defaultValue = 0;
   const [value, setValue] = useState<number>(defaultValue);
@@ -22,6 +28,7 @@ export default function RotateTool({ disabled }: { disabled: boolean }) {
     <ToolbarButton
       open={open}
       setOpen={setOpen}
+      shareToken={shareToken}
       tool={{
         procedure: "rotate",
         params: {

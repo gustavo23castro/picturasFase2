@@ -1,4 +1,4 @@
-import { LoaderCircle, Sparkle, type LucideIcon } from "lucide-react";
+import { LoaderCircle, Sparkle, X, type LucideIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useRouter } from "next/navigation";
 import { useSession } from "@/providers/session-provider";
@@ -9,17 +9,24 @@ import {
   DropdownMenuTrigger,
   DropdownMenuSeparator,
 } from "../ui/dropdown-menu";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   useCurrentImage,
   usePreview,
   useProjectInfo,
+  useToolModal,
 } from "@/providers/project-provider";
 import {
   useAddProjectTool,
   useDeleteProjectTool,
   usePreviewProjectResult,
   useUpdateProjectTool,
+  useAddSharedProjectTool,
+  useUpdateSharedProjectTool,
+  useDeleteSharedProjectTool,
+  usePreviewSharedProjectResult,
+  useCancelProjectPreview,
+  useCancelSharedProjectPreview,
 } from "@/lib/mutations/projects";
 import { ProjectTool, ProjectToolResponse } from "@/lib/projects";
 import { toast } from "@/hooks/use-toast";
@@ -35,6 +42,7 @@ interface ToolbarButtonProps {
   isDefault?: boolean;
   isPremium?: boolean;
   tool: Omit<ProjectTool, "position">;
+  shareToken?: string;
   children?: React.ReactNode;
   noParams?: boolean;
   onDefault?: () => void;
@@ -49,6 +57,7 @@ export function ToolbarButton({
   isDefault = false,
   isPremium = false,
   tool,
+  shareToken,
   children,
   noParams = false,
   onDefault = () => {},
@@ -57,11 +66,13 @@ export function ToolbarButton({
   const session = useSession();
   const project = useProjectInfo();
   const preview = usePreview();
+  const toolModal = useToolModal();
+  const isShared = Boolean(shareToken);
   const variant =
     project.tools.find((t) => t.procedure === tool.procedure) !== undefined
       ? "default"
       : "outline";
-  const socket = useGetSocket(session.token);
+  const socket = useGetSocket(session.token, project._id);
 
   const currentImage = useCurrentImage();
   const addTool = useAddProjectTool(
@@ -80,51 +91,131 @@ export function ToolbarButton({
     session.token,
   );
   const previewEdits = usePreviewProjectResult();
+  const addSharedTool = useAddSharedProjectTool(shareToken || "");
+  const updateSharedTool = useUpdateSharedProjectTool(shareToken || "");
+  const deleteSharedTool = useDeleteSharedProjectTool(shareToken || "");
+  const previewSharedEdits = usePreviewSharedProjectResult();
+  const cancelPreview = useCancelProjectPreview();
+  const cancelSharedPreview = useCancelSharedProjectPreview();
 
   const [prevTool, setPrevTool] = useState<ProjectToolResponse | undefined>(
     undefined,
   );
   const [waiting, setWaiting] = useState<boolean>(false);
   const [timedout, setTimedout] = useState<boolean>(false);
+  const [showCancel, setShowCancel] = useState<boolean>(false);
+  const cancelTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   function handleDeleteTool() {
     if (prevTool) {
-      deleteTool.mutate(
-        {
-          uid: session.user._id,
-          pid: project._id,
-          toolId: prevTool._id,
-          token: session.token,
+      const mutation = isShared ? deleteSharedTool : deleteTool;
+      const payload = isShared
+        ? { token: shareToken || "", toolId: prevTool._id }
+        : {
+            uid: session.user._id,
+            pid: project._id,
+            toolId: prevTool._id,
+            token: session.token,
+          };
+
+      mutation.mutate(payload as any, {
+        onError: (error) => {
+          toast({
+            title: "Ups! An error occurred.",
+            description: error.message,
+            variant: "destructive",
+          });
         },
-        {
-          onError: (error) => {
-            toast({
-              title: "Ups! An error occurred.",
-              description: error.message,
-              variant: "destructive",
-            });
-          },
-        },
-      );
+      });
     }
   }
 
   function handlePreview() {
-    previewEdits.mutate(
-      {
-        uid: session.user._id,
-        pid: project._id,
-        imageId: currentImage?._id ?? "",
-        token: session.token,
+    const mutation = isShared ? previewSharedEdits : previewEdits;
+    const payload = isShared
+      ? { token: shareToken || "", imageId: currentImage?._id ?? "" }
+      : {
+          uid: session.user._id,
+          pid: project._id,
+          imageId: currentImage?._id ?? "",
+          token: session.token,
+        };
+
+    mutation.mutate(payload as any, {
+      onSuccess: () => {
+        setWaiting(true);
+        setShowCancel(false);
+        preview.setWaiting(tool.procedure);
+        if (cancelTimerRef.current) {
+          clearTimeout(cancelTimerRef.current);
+        }
+        cancelTimerRef.current = setTimeout(() => {
+          setShowCancel(true);
+        }, 10000);
+        setTimeout(
+          () => setTimedout(true),
+          10000 * (project.tools.length + 1),
+        );
       },
-      {
+      onError: (error) => {
+        toast({
+          title: "Ups! An error occurred.",
+          description: error.message,
+          variant: "destructive",
+        });
+      },
+    });
+  }
+
+  function handleCancelPreview() {
+    const mutation = isShared ? cancelSharedPreview : cancelPreview;
+    const payload = isShared
+      ? { token: shareToken || "" }
+      : {
+          uid: session.user._id,
+          pid: project._id,
+          token: session.token,
+        };
+
+    mutation.mutate(payload as any, {
+      onError: (error) => {
+        toast({
+          title: "Ups! An error occurred.",
+          description: error.message,
+          variant: "destructive",
+        });
+      },
+    });
+
+    setWaiting(false);
+    setShowCancel(false);
+    preview.setWaiting("");
+    if (cancelTimerRef.current) {
+      clearTimeout(cancelTimerRef.current);
+      cancelTimerRef.current = null;
+    }
+  }
+
+  function handleAddTool(preview?: boolean) {
+    if (prevTool) {
+      const mutation = isShared ? updateSharedTool : updateTool;
+      const payload = isShared
+        ? {
+            token: shareToken || "",
+            toolId: prevTool._id,
+            toolParams: tool.params,
+          }
+        : {
+            uid: session.user._id,
+            pid: project._id,
+            toolId: prevTool._id,
+            toolParams: tool.params,
+            token: session.token,
+          };
+
+      mutation.mutate(payload as any, {
         onSuccess: () => {
-          setWaiting(true);
-          preview.setWaiting(tool.procedure);
-          setTimeout(
-            () => setTimedout(true),
-            10000 * (project.tools.length + 1),
-          );
+          if (preview) handlePreview();
         },
         onError: (error) => {
           toast({
@@ -133,62 +224,57 @@ export function ToolbarButton({
             variant: "destructive",
           });
         },
-      },
-    );
-  }
-
-  function handleAddTool(preview?: boolean) {
-    if (prevTool) {
-      updateTool.mutate(
-        {
-          uid: session.user._id,
-          pid: project._id,
-          toolId: prevTool._id,
-          toolParams: tool.params,
-          token: session.token,
-        },
-        {
-          onSuccess: () => {
-            if (preview) handlePreview();
-          },
-          onError: (error) => {
-            toast({
-              title: "Ups! An error occurred.",
-              description: error.message,
-              variant: "destructive",
-            });
-          },
-        },
-      );
+      });
     } else {
-      addTool.mutate(
-        {
-          uid: session.user._id,
-          pid: project._id,
-          tool: {
-            ...tool,
-            position: project.tools.length,
-          },
-          token: session.token,
+      const mutation = isShared ? addSharedTool : addTool;
+      const payload = isShared
+        ? {
+            token: shareToken || "",
+            tool: {
+              ...tool,
+              position: project.tools.length,
+            },
+          }
+        : {
+            uid: session.user._id,
+            pid: project._id,
+            tool: {
+              ...tool,
+              position: project.tools.length,
+            },
+            token: session.token,
+          };
+
+      mutation.mutate(payload as any, {
+        onSuccess: () => {
+          if (preview) handlePreview();
         },
-        {
-          onSuccess: () => {
-            if (preview) handlePreview();
-          },
-          onError: (error) => {
-            toast({
-              title: "Ups! An error occurred.",
-              description: error.message,
-              variant: "destructive",
-            });
-          },
+        onError: (error) => {
+          toast({
+            title: "Ups! An error occurred.",
+            description: error.message,
+            variant: "destructive",
+          });
         },
-      );
+      });
     }
     setOpen(false);
   }
 
   function handleClick() {
+    if (waiting && showCancel) {
+      handleCancelPreview();
+      return;
+    }
+
+    if (isShared) {
+      if (noParams) {
+        if (prevTool) handleDeleteTool();
+        else handleAddTool(true);
+      }
+      return;
+    }
+
     if (isPremium) {
       if (session.user.type === "anonymous") {
         router.push("/login");
@@ -210,12 +296,17 @@ export function ToolbarButton({
     if (timedout) {
       if (waiting) {
         setWaiting(false);
+        setShowCancel(false);
         preview.setWaiting("");
         toast({
           title: "Ups! An error occurred.",
           description: "The preview took too long to load.",
           variant: "destructive",
         });
+      }
+      if (cancelTimerRef.current) {
+        clearTimeout(cancelTimerRef.current);
+        cancelTimerRef.current = null;
       }
       setTimedout(false);
     }
@@ -228,7 +319,34 @@ export function ToolbarButton({
       socket.data.on("preview-ready", () => {
         if (active) {
           setWaiting(false);
+          setShowCancel(false);
           preview.setWaiting("");
+          if (cancelTimerRef.current) {
+            clearTimeout(cancelTimerRef.current);
+            cancelTimerRef.current = null;
+          }
+        }
+      });
+      socket.data.on("preview-canceled", () => {
+        if (active) {
+          setWaiting(false);
+          setShowCancel(false);
+          preview.setWaiting("");
+          if (cancelTimerRef.current) {
+            clearTimeout(cancelTimerRef.current);
+            cancelTimerRef.current = null;
+          }
+        }
+      });
+      socket.data.on("preview-error", () => {
+        if (active) {
+          setWaiting(false);
+          setShowCancel(false);
+          preview.setWaiting("");
+          if (cancelTimerRef.current) {
+            clearTimeout(cancelTimerRef.current);
+            cancelTimerRef.current = null;
+          }
         }
       });
     }
@@ -237,6 +355,8 @@ export function ToolbarButton({
       active = false;
       if (socket.data) {
         socket.data.off("preview-ready");
+        socket.data.off("preview-canceled");
+        socket.data.off("preview-error");
       }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -246,6 +366,10 @@ export function ToolbarButton({
     const prevTool = project.tools.find((t) => t.procedure === tool.procedure);
     setPrevTool(prevTool);
   }, [project.tools, tool.procedure]);
+
+  useEffect(() => {
+    toolModal.setOpen(open);
+  }, [open, toolModal]);
 
   const TButton = () => (
     <Tooltip>
@@ -259,7 +383,7 @@ export function ToolbarButton({
         onClick={handleClick}
       >
         {waiting ? (
-          <LoaderCircle className="animate-spin" />
+          showCancel ? <X className="h-3.5 w-3.5" /> : <LoaderCircle className="animate-spin" />
         ) : (
           <>
             {isPremium ? (

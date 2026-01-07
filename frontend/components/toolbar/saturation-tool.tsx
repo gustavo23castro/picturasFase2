@@ -5,7 +5,13 @@ import { useEffect, useState } from "react";
 import { useProjectInfo } from "@/providers/project-provider";
 import { SaturationToolParams } from "@/lib/tool-types";
 
-export default function SaturationTool({ disabled }: { disabled: boolean }) {
+export default function SaturationTool({
+  disabled,
+  shareToken,
+}: {
+  disabled: boolean;
+  shareToken?: string;
+}) {
   const project = useProjectInfo();
   const defaultValue = 1;
   const [value, setValue] = useState<number>(defaultValue);
@@ -26,6 +32,7 @@ export default function SaturationTool({ disabled }: { disabled: boolean }) {
     <ToolbarButton
       open={open}
       setOpen={setOpen}
+      shareToken={shareToken}
       tool={{
         procedure: "saturation",
         params: {

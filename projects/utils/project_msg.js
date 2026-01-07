@@ -37,7 +37,7 @@ function send_msg_tool(msg_id, timestamp, og_img_uri, new_img_uri, tool, params)
     send_rabbit_msg(msg, queue);
 }
 
-function send_msg_client(msg_id, timestamp, user) {
+function send_msg_client(msg_id, timestamp, user, project_id = null) {
     const queue = queues['ws'];
     const msg = {
         "messageId": msg_id,
@@ -46,10 +46,12 @@ function send_msg_client(msg_id, timestamp, user) {
         "status": 'success'
     };
 
+    if (project_id) msg["project_id"] = project_id;
+
     send_rabbit_msg(msg, queue);
 }
 
-function send_msg_client_error(msg_id, timestamp, user, error_code, error_msg) {
+function send_msg_client_error(msg_id, timestamp, user, error_code, error_msg, project_id = null) {
     const queue = queues['ws'];
     const msg = {
         "messageId": msg_id,
@@ -60,10 +62,12 @@ function send_msg_client_error(msg_id, timestamp, user, error_code, error_msg) {
         "errorMsg": error_msg
     };
 
+    if (project_id) msg["project_id"] = project_id;
+
     send_rabbit_msg(msg, queue);
 }
 
-function send_msg_client_preview(msg_id, timestamp, user, url) {
+function send_msg_client_preview(msg_id, timestamp, user, url, project_id = null) {
     const queue = queues['ws'];
     const msg = {
         "messageId": msg_id,
@@ -73,10 +77,12 @@ function send_msg_client_preview(msg_id, timestamp, user, url) {
         "img_url": url
     };
 
+    if (project_id) msg["project_id"] = project_id;
+
     send_rabbit_msg(msg, queue);
 }
 
-function send_msg_client_preview_error(msg_id, timestamp, user, error_code, error_msg) {
+function send_msg_client_preview_error(msg_id, timestamp, user, error_code, error_msg, project_id = null) {
     const queue = queues['ws'];
     const msg = {
         "messageId": msg_id,
@@ -87,6 +93,34 @@ function send_msg_client_preview_error(msg_id, timestamp, user, error_code, erro
         "errorMsg": error_msg
     };
 
+    if (project_id) msg["project_id"] = project_id;
+
+    send_rabbit_msg(msg, queue);
+}
+
+function send_msg_client_cancel(msg_id, timestamp, user, run_id, mode) {
+    const queue = queues['ws'];
+    const msg = {
+        "messageId": msg_id,
+        "timestamp": timestamp,
+        "user": user,
+        "status": "canceled",
+        "run_id": run_id,
+        "mode": mode
+    };
+
+    send_rabbit_msg(msg, queue);
+}
+
+function send_msg_project_update(msg_id, timestamp, project_id) {
+    const queue = queues['ws'];
+    const msg = {
+        "messageId": msg_id,
+        "timestamp": timestamp,
+        "status": "project-update",
+        "project_id": project_id
+    };
+
     send_rabbit_msg(msg, queue);
 }
 
@@ -94,4 +128,13 @@ function read_msg(callback){
     read_rabbit_msg(queues['project'], callback);
 }
 
-module.exports = { send_msg_tool, send_msg_client, send_msg_client_error, send_msg_client_preview, send_msg_client_preview_error, read_msg };
+module.exports = {
+    send_msg_tool,
+    send_msg_client,
+    send_msg_client_error,
+    send_msg_client_preview,
+    send_msg_client_preview_error,
+    send_msg_client_cancel,
+    send_msg_project_update,
+    read_msg
+};

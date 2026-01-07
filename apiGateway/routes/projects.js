@@ -67,6 +67,120 @@ Post answer structure in case of success
  */
 
 /**
+ * Share access (unauthenticated)
+ */
+router.get("/share/:token", function (req, res, next) {
+  axios
+    .get(projectsURL + `share/${req.params.token}`, { httpsAgent: httpsAgent })
+    .then((resp) => res.status(200).jsonp(resp.data))
+    .catch((err) => res.status(404).jsonp("Invalid or revoked link"));
+});
+
+router.get("/share/:token/imgs", function (req, res, next) {
+  axios
+    .get(projectsURL + `share/${req.params.token}/imgs`, {
+      httpsAgent: httpsAgent,
+    })
+    .then((resp) => res.status(200).jsonp(resp.data))
+    .catch((err) => res.status(404).jsonp("Invalid or revoked link"));
+});
+
+router.get("/share/:token/img/:img", function (req, res, next) {
+  axios
+    .get(projectsURL + `share/${req.params.token}/img/${req.params.img}`, {
+      httpsAgent: httpsAgent,
+    })
+    .then((resp) => res.status(200).jsonp(resp.data))
+    .catch((err) => res.status(404).jsonp("Invalid or revoked link"));
+});
+
+router.get("/share/:token/process/url", function (req, res, next) {
+  axios
+    .get(projectsURL + `share/${req.params.token}/process/url`, {
+      httpsAgent: httpsAgent,
+    })
+    .then((resp) => res.status(200).jsonp(resp.data))
+    .catch((err) => res.status(500).jsonp("Error getting processing results"));
+});
+
+router.post("/share/:token/tool", function (req, res, next) {
+  axios
+    .post(projectsURL + `share/${req.params.token}/tool`, req.body, {
+      httpsAgent: httpsAgent,
+    })
+    .then((resp) => res.sendStatus(resp.status))
+    .catch((err) => res.status(500).jsonp("Error adding tool"));
+});
+
+router.put("/share/:token/tool/:tool", function (req, res, next) {
+  axios
+    .put(
+      projectsURL + `share/${req.params.token}/tool/${req.params.tool}`,
+      req.body,
+      { httpsAgent: httpsAgent }
+    )
+    .then((resp) => res.sendStatus(resp.status))
+    .catch((err) => res.status(500).jsonp("Error updating tool"));
+});
+
+router.delete("/share/:token/tool/:tool", function (req, res, next) {
+  axios
+    .delete(
+      projectsURL + `share/${req.params.token}/tool/${req.params.tool}`,
+      { httpsAgent: httpsAgent }
+    )
+    .then((resp) => res.sendStatus(resp.status))
+    .catch((err) => res.status(500).jsonp("Error deleting tool"));
+});
+
+router.post("/share/:token/reorder", function (req, res, next) {
+  axios
+    .post(projectsURL + `share/${req.params.token}/reorder`, req.body, {
+      httpsAgent: httpsAgent,
+    })
+    .then((resp) => res.sendStatus(resp.status))
+    .catch((err) => res.status(500).jsonp("Error reordering tools"));
+});
+
+router.post("/share/:token/preview/:img", function (req, res, next) {
+  axios
+    .post(
+      projectsURL + `share/${req.params.token}/preview/${req.params.img}`,
+      req.body,
+      { httpsAgent: httpsAgent }
+    )
+    .then((resp) => res.sendStatus(resp.status))
+    .catch((err) => res.status(500).jsonp("Error requesting preview"));
+});
+
+router.post("/share/:token/process", function (req, res, next) {
+  axios
+    .post(projectsURL + `share/${req.params.token}/process`, req.body, {
+      httpsAgent: httpsAgent,
+    })
+    .then((resp) => res.sendStatus(resp.status))
+    .catch((err) => res.status(500).jsonp("Error requesting processing"));
+});
+
+router.post("/share/:token/process/cancel", function (req, res, next) {
+  axios
+    .post(projectsURL + `share/${req.params.token}/process/cancel`, req.body, {
+      httpsAgent: httpsAgent,
+    })
+    .then((resp) => res.sendStatus(resp.status))
+    .catch((err) => res.status(500).jsonp("Error canceling processing"));
+});
+
+router.post("/share/:token/preview/cancel", function (req, res, next) {
+  axios
+    .post(projectsURL + `share/${req.params.token}/preview/cancel`, req.body, {
+      httpsAgent: httpsAgent,
+    })
+    .then((resp) => res.sendStatus(resp.status))
+    .catch((err) => res.status(500).jsonp("Error canceling preview"));
+});
+
+/**
  * Get user's projects
  * @body Empty
  * @returns List of projects, each project has no information about it's images or tools
@@ -91,6 +205,43 @@ router.get("/:user/:project", auth.checkToken, function (req, res, next) {
     .then((resp) => res.status(200).jsonp(resp.data))
     .catch((err) => res.status(500).jsonp("Error getting project"));
 });
+
+/**
+ * Share management (authenticated)
+ */
+router.get("/:user/:project/share", auth.checkToken, function (req, res, next) {
+  axios
+    .get(projectsURL + `${req.params.user}/${req.params.project}/share`, {
+      httpsAgent: httpsAgent,
+    })
+    .then((resp) => res.status(200).jsonp(resp.data))
+    .catch((err) => res.status(500).jsonp("Error getting share links"));
+});
+
+router.post("/:user/:project/share", auth.checkToken, function (req, res, next) {
+  axios
+    .post(projectsURL + `${req.params.user}/${req.params.project}/share`, req.body, {
+      httpsAgent: httpsAgent,
+    })
+    .then((resp) => res.status(201).jsonp(resp.data))
+    .catch((err) => res.status(500).jsonp("Error creating share link"));
+});
+
+router.post(
+  "/:user/:project/share/:token/revoke",
+  auth.checkToken,
+  function (req, res, next) {
+    axios
+      .post(
+        projectsURL +
+          `${req.params.user}/${req.params.project}/share/${req.params.token}/revoke`,
+        req.body,
+        { httpsAgent: httpsAgent }
+      )
+      .then((resp) => res.sendStatus(resp.status))
+      .catch((err) => res.status(500).jsonp("Error revoking share link"));
+  }
+);
 
 /**
  * Get project image
@@ -179,6 +330,28 @@ router.get(
 );
 
 /**
+ * Get project metrics
+ * @body Empty
+ * @returns Recent processing metrics
+ */
+router.get(
+  "/:user/:project/metrics",
+  auth.checkToken,
+  function (req, res, next) {
+    const limit = req.query.limit ? `?limit=${req.query.limit}` : "";
+    axios
+      .get(
+        projectsURL + `${req.params.user}/${req.params.project}/metrics${limit}`,
+        {
+          httpsAgent: httpsAgent,
+        }
+      )
+      .then((resp) => res.status(200).send(resp.data))
+      .catch((err) => res.status(500).jsonp("Error getting project metrics"));
+  }
+);
+
+/**
  * Create new user's project
  * @body { "name": String }
  * @returns Created project's data
@@ -213,6 +386,39 @@ router.post(
         console.log(err);
         res.status(500).jsonp("Error requesting image preview");
       });
+  }
+);
+
+/**
+ * Cancel processing or preview
+ */
+router.post(
+  "/:user/:project/process/cancel",
+  auth.checkToken,
+  function (req, res, next) {
+    axios
+      .post(
+        projectsURL + `${req.params.user}/${req.params.project}/process/cancel`,
+        req.body,
+        { httpsAgent: httpsAgent }
+      )
+      .then((resp) => res.sendStatus(resp.status))
+      .catch((err) => res.status(500).jsonp("Error canceling processing"));
+  }
+);
+
+router.post(
+  "/:user/:project/preview/cancel",
+  auth.checkToken,
+  function (req, res, next) {
+    axios
+      .post(
+        projectsURL + `${req.params.user}/${req.params.project}/preview/cancel`,
+        req.body,
+        { httpsAgent: httpsAgent }
+      )
+      .then((resp) => res.sendStatus(resp.status))
+      .catch((err) => res.status(500).jsonp("Error canceling preview"));
   }
 );
 

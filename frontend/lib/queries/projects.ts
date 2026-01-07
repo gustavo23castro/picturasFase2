@@ -5,6 +5,10 @@ import {
   getProjectImages,
   ProjectImage,
   fetchProjectResults,
+  fetchShareProject,
+  fetchShareProjectResults,
+  fetchShareLinks,
+  ShareLink,
 } from "../projects";
 import { io } from "socket.io-client";
 
@@ -35,13 +39,14 @@ export const useGetProjectImages = (
   });
 };
 
-export const useGetSocket = (token: string) => {
+export const useGetSocket = (token?: string, projectId?: string) => {
   return useQuery({
-    queryKey: ["socket", token],
+    queryKey: ["socket", token, projectId],
     queryFn: () =>
       io("http://localhost:8080", {
         auth: {
           token: token,
+          projectId: projectId,
         },
       }),
     refetchOnWindowFocus: false,
@@ -57,5 +62,26 @@ export const useGetProjectResults = (
   return useQuery({
     queryKey: ["projectResults", uid, pid, token],
     queryFn: () => fetchProjectResults(uid, pid, token),
+  });
+};
+
+export const useGetShareProject = (token: string) => {
+  return useQuery({
+    queryKey: ["shareProject", token],
+    queryFn: () => fetchShareProject(token),
+  });
+};
+
+export const useGetShareProjectResults = (token: string) => {
+  return useQuery({
+    queryKey: ["shareProjectResults", token],
+    queryFn: () => fetchShareProjectResults(token),
+  });
+};
+
+export const useGetShareLinks = (uid: string, pid: string, token: string) => {
+  return useQuery<ShareLink[]>({
+    queryKey: ["shareLinks", uid, pid, token],
+    queryFn: () => fetchShareLinks({ uid, pid, token }),
   });
 };

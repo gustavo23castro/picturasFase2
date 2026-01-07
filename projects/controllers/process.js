@@ -10,7 +10,11 @@ module.exports.getProject = async (user_id, project_id) => {
     .exec();
 };
 
-module.exports.getOne = async (user_id, project_id, process_id) => {
+module.exports.getByRunId = async (project_id, run_id) => {
+  return await Process.find({ project_id: project_id, run_id: run_id }).exec();
+};
+
+module.exports.getOneById = async (user_id, project_id, process_id) => {
   return await Process.findOne({
     user_id: user_id,
     project_id: project_id,

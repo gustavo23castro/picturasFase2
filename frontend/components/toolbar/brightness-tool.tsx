@@ -5,7 +5,13 @@ import { useEffect, useState } from "react";
 import { useProjectInfo } from "@/providers/project-provider";
 import { BrightnessToolParams } from "@/lib/tool-types";
 
-export default function BrightnessTool({ disabled }: { disabled: boolean }) {
+export default function BrightnessTool({
+  disabled,
+  shareToken,
+}: {
+  disabled: boolean;
+  shareToken?: string;
+}) {
   const project = useProjectInfo();
   const defaultValue = 1;
   const [value, setValue] = useState<number>(defaultValue);
@@ -24,6 +30,7 @@ export default function BrightnessTool({ disabled }: { disabled: boolean }) {
     <ToolbarButton
       open={open}
       setOpen={setOpen}
+      shareToken={shareToken}
       tool={{
         procedure: "brightness",
         params: {
