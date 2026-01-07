@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { ArrowUp, ArrowDown } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
@@ -51,6 +51,11 @@ export function PipelineDialog({
   const [open, setOpen] = useState(false);
   const isShared = Boolean(shareToken);
 
+  const [tools, setTools] = useState(project.tools);
+  useEffect(() => {
+    setTools(project.tools);
+  }, [project.tools]);
+
   const reorderTools = useReorderProjectTools(
     session.user._id,
     project._id,
@@ -61,6 +66,7 @@ export function PipelineDialog({
   const previewSharedEdits = usePreviewSharedProjectResult();
 
   function handleReorder(from: number, to: number) {
+    console.log("handleReorder called", from, to);
     const reordered = [...project.tools];
     const [moved] = reordered.splice(from, 1);
     reordered.splice(to, 0, moved);
@@ -111,12 +117,12 @@ export function PipelineDialog({
           <DialogTitle>Tool pipeline</DialogTitle>
         </DialogHeader>
         <div className="flex flex-col gap-2">
-          {project.tools.length === 0 && (
+          {tools.length === 0 && (
             <p className="text-sm text-muted-foreground">
               No tools applied yet.
             </p>
           )}
-          {project.tools.map((tool, index) => (
+          {tools.map((tool, index) => (
             <div
               key={tool._id}
               className="flex items-center justify-between rounded-md border p-2"
@@ -136,7 +142,7 @@ export function PipelineDialog({
                 <Button
                   variant="outline"
                   size="icon"
-                  disabled={index === project.tools.length - 1 || readOnly}
+                  disabled={index === tools.length - 1 || readOnly}
                   onClick={() => handleReorder(index, index + 1)}
                 >
                   <ArrowDown className="h-4 w-4" />

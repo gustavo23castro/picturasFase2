@@ -256,6 +256,7 @@ export const useReorderProjectTools = (
   return useMutation({
     mutationFn: reorderProjectTools,
     onSuccess: () => {
+      console.log("Reorder onSuccess");
       qc.invalidateQueries({ queryKey: ["project", uid, pid, token] });
       qc.invalidateQueries({
         refetchType: "all",
@@ -341,6 +342,7 @@ export const useReorderSharedProjectTools = (shareToken: string) => {
   return useMutation({
     mutationFn: reorderSharedProjectTools,
     onSuccess: () => {
+      console.log("Reorder shared onSuccess");
       qc.invalidateQueries({ queryKey: ["shareProject", shareToken] });
       qc.invalidateQueries({ queryKey: ["shareProjectResults", shareToken] });
     },
