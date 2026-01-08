@@ -4,17 +4,14 @@ import sys
 
 import numpy as np
 import cv2
-from PIL import Image, ImageEnhance
 
 import pytz
 
-from utils.img_handler import Img_Handler
 from utils.tool_msg import ToolMSG
 import utils.env as env
 
 class Upgrade_ai:
     def __init__(self):
-        self._img_handler = Img_Handler()
         self._tool_msg = ToolMSG(
             'picturas-upgrade-ai-tool-ms',
             'upgrade_ai',
@@ -27,13 +24,35 @@ class Upgrade_ai:
             'wrong_procedure': 1800,
             'error_processing': 1801
         }
+        self._enhancement_params = {
+            "brightness": 1.02,
+            "contrast": 1.02,
+            "saturation": 1.02,
+            "clip_limit": 1.0,
+            "tile_grid_size": 32,
+            "alpha": 0.8
+        }
+        self._clahe = None
+        self._clahe_clip_limit = None
+        self._clahe_tile_grid_size = None
+        
+    def _get_clahe(self, clip_limit, tile_grid_size):
+        if (self._clahe is None or self._clahe_clip_limit != clip_limit
+                or self._clahe_tile_grid_size != tile_grid_size):
+            self._clahe = cv2.createCLAHE(
+                clipLimit=clip_limit,
+                tileGridSize=tile_grid_size
+            )
+            self._clahe_clip_limit = clip_limit
+            self._clahe_tile_grid_size = tile_grid_size
+        return self._clahe
         
     def apply_clahe(self, image_cv, clip_limit=1.0, tile_grid_size=(32,32), alpha=0.8):
         
         lab = cv2.cvtColor(image_cv, cv2.COLOR_BGR2LAB)
         l, a, b = cv2.split(lab)
 
-        clahe = cv2.createCLAHE(clipLimit=clip_limit, tileGridSize=tile_grid_size)
+        clahe = self._get_clahe(clip_limit, tile_grid_size)
         cl = clahe.apply(l)
 
         merged_lab = cv2.merge((cl, a, b))
@@ -43,43 +62,40 @@ class Upgrade_ai:
         blended = cv2.addWeighted(enhanced_bgr, alpha, image_cv, 1 - alpha, 0)
         return blended
 
-    def enhance_image_pil(self, pil_img, brightness=1.02, contrast=1.02, saturation=1.02):
-        
-        # Only convert palette images 
-        if pil_img.mode == 'P':
-            pil_img = pil_img.convert('RGB')
-        
-        # Saturation
-        enhancer = ImageEnhance.Color(pil_img)
-        pil_img = enhancer.enhance(saturation)
-        
-        # Brightness
-        enhancer = ImageEnhance.Brightness(pil_img)
-        pil_img = enhancer.enhance(brightness)
-        
-        # Contrast
-        enhancer = ImageEnhance.Contrast(pil_img)
-        pil_img = enhancer.enhance(contrast)
-        
-        return pil_img
-    
     def decide_enhancement_parameters(self, img_path):
-        return {
-            "brightness": 1.02,
-            "contrast": 1.02,
-            "saturation": 1.02,
-            "clip_limit": 1.0,
-            "tile_grid_size": 32,
-            "alpha": 0.8
-        }
+        return self._enhancement_params
+        
+    def _load_image_cv(self, img_path):
+        img_cv = cv2.imread(img_path, cv2.IMREAD_UNCHANGED)
+        if img_cv is None:
+            raise Exception(f"Failed to read image: {img_path}")
+        if len(img_cv.shape) == 2:
+            return cv2.cvtColor(img_cv, cv2.COLOR_GRAY2BGR)
+        if img_cv.shape[2] == 4:
+            return cv2.cvtColor(img_cv, cv2.COLOR_BGRA2BGR)
+        return img_cv
+        
+    def _adjust_saturation(self, image_cv, saturation):
+        if saturation == 1.0:
+            return image_cv
+        hsv = cv2.cvtColor(image_cv, cv2.COLOR_BGR2HSV).astype(np.float32)
+        hsv[:, :, 1] *= saturation
+        hsv[:, :, 1] = np.clip(hsv[:, :, 1], 0, 255)
+        return cv2.cvtColor(hsv.astype(np.uint8), cv2.COLOR_HSV2BGR)
+        
+    def _adjust_brightness_contrast(self, image_cv, brightness, contrast):
+        img = image_cv.astype(np.float32)
+        if brightness != 1.0:
+            img *= brightness
+        if contrast != 1.0:
+            mean = np.mean(img, axis=(0, 1), keepdims=True)
+            img = (img - mean) * contrast + mean
+        img = np.clip(img, 0, 255)
+        return img.astype(np.uint8)
         
     def enhance_image(self, img_path, store_img_path):
-        # load image
-        image = self._img_handler.get_img(img_path).convert('RGB')
-        
         params = self.decide_enhancement_parameters(img_path)
-
-        img_cv = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
+        img_cv = self._load_image_cv(img_path)
 
         # Apply CLAHE
         enhanced_cv = self.apply_clahe(
@@ -89,18 +105,18 @@ class Upgrade_ai:
             alpha=params["alpha"]
         )
 
-        enhanced_pil = Image.fromarray(cv2.cvtColor(enhanced_cv, cv2.COLOR_BGR2RGB))
-
-        final_pil = self.enhance_image_pil(
-            enhanced_pil,
-            brightness=params["brightness"],
-            contrast=params["contrast"],
+        enhanced_cv = self._adjust_saturation(
+            enhanced_cv,
             saturation=params["saturation"]
         )
+        enhanced_cv = self._adjust_brightness_contrast(
+            enhanced_cv,
+            brightness=params["brightness"],
+            contrast=params["contrast"]
+        )
         
-        # this would be good to ensure quality but we use store_img so rip
-        # final_pil.save(output_path, quality=95, optimize=True)
-        self._img_handler.store_img(final_pil, store_img_path)
+        if not cv2.imwrite(store_img_path, enhanced_cv):
+            raise Exception(f"Failed to write image: {store_img_path}")
 
     def upgrade_ai_callback(self, ch, method, properties, body):
         json_str = body.decode()
