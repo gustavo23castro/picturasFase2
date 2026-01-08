@@ -571,7 +571,7 @@ export const reorderProjectTools = async ({
     }
   );
 
-  if (response.status !== 204) throw new Error("Failed to reorder tools");
+  if (response.status !== 201) throw new Error("Failed to reorder tools");
 };
 
 export const cancelProjectProcess = async ({
