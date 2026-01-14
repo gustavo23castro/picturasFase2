@@ -1,0 +1,43 @@
+sequenceDiagram
+  autonumber
+  participant FE2 as Frontend (destinatário)
+  participant APIG as API Gateway
+  participant PRJ as Projects Service
+  participant DB as MongoDB (projects)
+  participant WSG as wsGateway
+  participant FE as Frontend (dono)
+
+  alt permission == edit
+    FE2->>APIG: POST/PUT/DELETE /projects/share/:token/tool...
+    APIG->>PRJ: /share/:token/tool...
+    PRJ->>DB: update pipeline (tools)
+    PRJ->>WSG: emit project-update(projectId)
+    WSG-->>FE2: WS: project-update
+    WSG-->>FE: WS: project-update
+    Note over FE2,FE: Concorrência: last-write-wins (LWW)
+
+    Note over FE2,PRJ: Processamento/cancelamento também exige edit
+    FE2->>APIG: POST /projects/share/:token/process (ou /preview/:img)
+    APIG->>PRJ: POST /share/:token/process (ou /preview/:img)
+    PRJ->>DB: validar token + ensureShareEdit
+    PRJ-->>APIG: 201/204
+  else permission == view
+    FE2-->>FE2: UI read-only + botões desativados
+    FE2->>APIG: POST /projects/share/:token/tool...
+    APIG->>PRJ: /share/:token/tool...
+    PRJ-->>APIG: 403 Link does not grant edit permissions
+    APIG-->>FE2: erro (403)
+  end
+
+  Note over FE,APIG: Gestão de links (autenticada)
+  FE->>APIG: POST /projects/:uid/:pid/share/:token/revoke
+  APIG->>PRJ: POST /:uid/:pid/share/:token/revoke (auth)
+  PRJ->>DB: revoked=true
+  PRJ-->>APIG: 204
+  APIG-->>FE: 204
+
+  Note over FE2,PRJ: Depois de revogado
+  FE2->>APIG: GET /projects/share/:token
+  APIG->>PRJ: GET /share/:token
+  PRJ-->>APIG: 404 Invalid or revoked link
+  APIG-->>FE2: erro (mensagem clara)

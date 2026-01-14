@@ -1,0 +1,39 @@
+sequenceDiagram
+  autonumber
+  actor Owner as Utilizador (dono)
+  participant FE as Frontend (Next.js)
+  participant APIG as API Gateway
+  participant PRJ as Projects Service
+  participant DB as MongoDB (projects)
+
+  Owner->>FE: "Share" (perm=view/edit)
+  FE->>APIG: POST /projects/:uid/:pid/share\n{permission, unsaved}
+  APIG->>PRJ: POST /:uid/:pid/share (auth)
+  alt unsaved == true
+    PRJ-->>APIG: 409 Save your project before sharing
+    APIG-->>FE: erro
+  else ok
+    PRJ->>DB: create ShareLink(token=32B->64hex)
+    DB-->>PRJ: {token, permission, created_at}
+    PRJ-->>APIG: 201 {token, permission}
+    APIG-->>FE: 201 {token, permission}
+    FE-->>Owner: mostra URL /share/:token
+  end
+
+  Note over Owner,FE: Dono partilha o link (fora do sistema)
+
+  actor Guest as Destinatário
+  participant FE2 as Frontend (guest)
+  Guest->>FE2: abre /share/:token
+  FE2->>APIG: GET /projects/share/:token
+  APIG->>PRJ: GET /share/:token
+  PRJ->>DB: ShareLink.findOne(token)
+  alt token inválido ou revoked
+    PRJ-->>APIG: 404 Invalid or revoked link
+    APIG-->>FE2: erro (mensagem clara)
+  else token válido
+    PRJ->>DB: Project.getOne(owner_id, project_id)
+    PRJ->>DB: ShareLink.touchAccess(token)
+    PRJ-->>APIG: 200 {project, permission}
+    APIG-->>FE2: dados do projeto
+  end
